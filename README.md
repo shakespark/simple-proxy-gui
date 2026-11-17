@@ -1,127 +1,56 @@
-# Simple Proxy
+# Simple Proxy GUI
 
-This is a simple HTTP/HTTPS proxy - designed to be distributed as a self-contained binary that can be dropped in
-anywhere and run.
+English | [简体中文](./README_zh.md)
 
-Code based on the guide here: <https://medium.com/@mlowicki/http-s-proxy-in-golang-in-less-than-100-lines-of-code-6a51c2f2c38c>
+A lightweight Windows desktop HTTP/HTTPS proxy tool with a clean GUI, built on [Wails v2](https://wails.io/) and forked from [jthomperoo/simple-proxy](https://github.com/jthomperoo/simple-proxy).
+
+Distributed as a single self-contained `.exe` built directly by GitHub Actions from source, with SHA256 checksums included in every release.
 
 ## Features
 
-- HTTP and HTTPS
-- Can choose which port to run on
-- Can specify paths to certificate and private key file to use
-- Logs each proxied connection
-- Log options can be supplied using `glog`
-  - Can choose the log verbosity with the `-v` flag
-  - Can choose to log to a file
-- Basic authentication
-- Can log request headers
-- Can log failed authentication attempt details
-- Printing version number
-- Tunnelling HTTP proxy to SOCKS5 proxy
+- **HTTP & HTTPS (`CONNECT`) Proxy**: Ready-to-use local or LAN proxy server (`0.0.0.0:8888` by default) with one-click Start / Stop.
+- **IP Whitelist (Hot-Reload)**:
+  - Master toggle to enable or disable IP filtering without restarting the proxy.
+  - Supports individual IPv4/IPv6 addresses and CIDR subnets (e.g., `192.168.1.0/24`), per-rule enable/disable switches, and one-click whitelisting from access logs.
+  - Unlisted clients receive `403 Forbidden` and are recorded in the log table.
+- **Real-time Traffic Chart**: Live 1-second sampling of upload/download speeds (`B/s`, `KB/s`, `MB/s`) and cumulative traffic over a 3-minute rolling window.
+- **IP Access Logs**:
+  - Tracks timestamp, client IP, HTTP method, target host/URL, status (`Active`, `200 OK`, `403 Blocked`, `407 Auth`, `Error`), upload/download bytes, and duration.
+  - Filter by IP/URL or status, pause auto-refresh, and export logs to UTF-8 CSV.
+- **Bilingual UI (`EN` / `中文`)**: Auto-detects system language on first launch and supports instant switching from the top bar.
+- **Persistent Configuration**: Saves settings and whitelist rules to `config.json` alongside the executable.
+- **Optional Auth & Upstream SOCKS5**: Supports HTTP Basic Authentication and forwarding `CONNECT` tunnels through an upstream SOCKS5 proxy.
+- **Safe Close Prompt**: Prompts for confirmation when closing via the window `X` button, while automatically skipping the prompt during Windows shutdown/restart.
 
-## Install
+## Download & Verify
 
-You can download the latest release for your architecture and operating system from [the releases
-page](https://github.com/jthomperoo/simple-proxy/releases).
+Download `simple-proxy-gui.exe` or `simple-proxy-gui_windows_amd64.zip` along with `checksums.txt` from the [Releases](https://github.com/shakespark/simple-proxy-gui/releases) page.
 
-Once you unzip the release package you can either run the binary directly, or you can add it into your PATH so it can
-be called from anywhere (e.g. the `/usr/bin` directory).
-
-### Linux AMD64
-
-You can use `wget` to download and install the program to your `/usr/bin` directory by running these commands:
-
-```bash
-wget https://github.com/jthomperoo/simple-proxy/releases/download/v1.4.0/simple-proxy_linux_amd64.zip
-unzip -d simple-proxy simple-proxy_linux_amd64.zip
-cp simple-proxy/simple-proxy /usr/bin/simple-proxy
-rm -r simple-proxy/ simple-proxy_linux_amd64.zip
-```
-
-## Usage
-
-You can download the binary and run the program directly (it is fully self contained).
-
-## Linux/MacOS
-
-You can run the binary directly:
-
-```bash
-./simple-proxy
-```
-
-## Windows
-
-You can run the binary directly:
-
-```bash
-simple-proxy.exe
-```
-
-## Options
-
-The program has the following options, you can see this list by using the `--help` flag.
-
-```bash
-Usage of simple-proxy:
-  -alsologtostderr
-    	log to standard error as well as files
-  -basic-auth string
-    	basic auth, format 'username:password', no auth if not provided
-  -bind string
-    	address to bind the proxy server to (default "0.0.0.0")
-  -cert string
-    	path to cert file
-  -key string
-    	path to key file
-  -log-auth
-    	log failed proxy auth details
-  -log-headers
-    	log request headers
-  -log_backtrace_at value
-    	when logging hits line file:N, emit a stack trace
-  -log_dir string
-    	If non-empty, write log files in this directory
-  -logtostderr
-    	log to standard error instead of files
-  -port string
-    	proxy port to listen on (default "8888")
-  -protocol string
-    	proxy protocol (http or https) (default "http")
-  -socks5 string
-    	SOCKS5 proxy for tunneling, not used if not provided
-  -socks5-auth string
-    	basic auth for socks5, format 'username:password', no auth if not provided
-  -stderrthreshold value
-    	logs at or above this threshold go to stderr
-  -timeout int
-    	timeout in seconds (default 10)
-  -v value
-    	log level for V logs
-  -version
-    	prints current simple-proxy version
-  -vmodule value
-    	comma-separated list of pattern=N settings for file-filtered logging
-```
-
-## Checking the proxy is working
-
-You can use [cURL](https://curl.se/) on Linux/MacOS systems to check if your proxy is working:
-
-```bash
-curl --proxy 'http://localhost:8888' 'https://www.random.org/integers/?num=1&min=1&max=5&col=1&base=10&format=plain&rnd=new'
-```
-
-This will reach out to [random.org](https://www.random.org) to fetch a random number, using the default proxy address
-and port.
-
-On Windows you can use:
+All official release binaries are compiled cleanly in public [GitHub Actions](https://github.com/shakespark/simple-proxy-gui/actions) runners directly from this repository's source code. You can verify the downloaded file hash in PowerShell:
 
 ```powershell
-curl.exe --proxy 'http://localhost:8888' 'https://www.random.org/integers/?num=1&min=1&max=5&col=1&base=10&format=plain&rnd=new'
+Get-FileHash .\simple-proxy-gui.exe -Algorithm SHA256
 ```
 
-## Contributing
+> **Note:** Requires Windows 10/11 with Microsoft Edge WebView2 Runtime (pre-installed on Windows 11 and most Windows 10 systems).
 
-See the [CONTRIBUTING](./CONTRIBUTING.md) and [CODE OF CONDUCT](./CODE_OF_CONDUCT.md) documents.
+## Quick Test
+
+After launching `simple-proxy-gui.exe`, test the proxy with `curl`:
+
+```powershell
+curl.exe --proxy "http://127.0.0.1:8888" "https://www.random.org/integers/?num=1&min=1&max=5&col=1&base=10&format=plain&rnd=new"
+```
+
+## Build from Source
+
+Requires Go 1.26+:
+
+```powershell
+go test -v ./...
+go build -tags desktop,production -ldflags="-H windowsgui -s -w" -o dist/simple-proxy-gui.exe .
+```
+
+## License
+
+MIT License — see [LICENSE](./LICENSE). Upstream project copyright 2022 Jamie Thompson.

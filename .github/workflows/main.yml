@@ -1,97 +1,86 @@
-name: main
+name: Build and Release
+
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
-  release:
-    types: [created]
+    branches: [main]
+
+permissions:
+  contents: write
+
 jobs:
-  build:
-    name: Build
-    runs-on: ubuntu-latest
+  build-windows:
+    name: Windows (amd64)
+    runs-on: windows-latest
     steps:
-    - name: Set up Go 1.24
-      uses: actions/setup-go@v5
-      with:
-        go-version: 1.24
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
-    - name: Lint
-      run: make lint
-    - name: Format
-      run: make format && git diff --exit-code
-    - name: Test
-      run: make test
-    - name: Build
-      run: |
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-        if [ ${{ github.event_name }} == "release" ]; then
-          VERSION="${{ github.event.release.tag_name }}"
-        else
-          VERSION=$(git rev-parse --short ${{ github.sha }})
-        fi
-        make VERSION="${VERSION}"
-        make zip
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
 
-    - name: Publish linux 386
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_linux_386.zip
-        path: dist/simple-proxy_linux_386.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $unformatted = gofmt -l .
+          if ($unformatted) {
+            Write-Error "Unformatted Go files:`n$unformatted"
+            exit 1
+          }
 
-    - name: Publish linux amd64
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_linux_amd64.zip
-        path: dist/simple-proxy_linux_amd64.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run go vet and tests
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test -v ./...
 
-    - name: Publish linux arm
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_linux_arm.zip
-        path: dist/simple-proxy_linux_arm.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Windows GUI binary
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA.Substring(0, 7) }
+          New-Item -ItemType Directory -Force -Path dist/package | Out-Null
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -tags desktop,production -ldflags="-H windowsgui -s -w -X 'main.Version=$version'" -o dist/simple-proxy-gui.exe .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item dist/simple-proxy-gui.exe dist/package/simple-proxy-gui.exe
+          Copy-Item LICENSE dist/package/LICENSE
+          Compress-Archive -Path dist/package/* -DestinationPath dist/simple-proxy-gui_windows_amd64.zip -Force
 
-    - name: Publish linux arm64
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_linux_arm64.zip
-        path: dist/simple-proxy_linux_arm64.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          $files = @("dist/simple-proxy-gui.exe", "dist/simple-proxy-gui_windows_amd64.zip")
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $(Split-Path $f -Leaf)"
+          }
+          $lines | Set-Content -Path dist/checksums.txt -Encoding ascii
+          Get-Content dist/checksums.txt
 
-    - name: Publish darwin amd64
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_darwin_amd64.zip
-        path: dist/simple-proxy_darwin_amd64.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-proxy-gui-windows-amd64
+          path: |
+            dist/simple-proxy-gui.exe
+            dist/simple-proxy-gui_windows_amd64.zip
+            dist/checksums.txt
 
-    - name: Publish darwin arm64
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_darwin_arm64.zip
-        path: dist/simple-proxy_darwin_arm64.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Publish windows 386
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_windows_386.zip
-        path: dist/simple-proxy_windows_386.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Publish windows amd64
-      if: github.event_name == 'release'
-      uses: Shopify/upload-to-release@1.0.0
-      with:
-        name: simple-proxy_windows_amd64.zip
-        path: dist/simple-proxy_windows_amd64.zip
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            dist/simple-proxy-gui.exe `
+            dist/simple-proxy-gui_windows_amd64.zip `
+            dist/checksums.txt `
+            --title $env:GITHUB_REF_NAME `
+            --generate-notes

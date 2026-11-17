@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simple Proxy</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">SP</div>
+        <div class="brand-text">
+          <div class="brand-title">Simple Proxy</div>
+          <div class="brand-sub" id="configPathHint" data-i18n="loading">Loading...</div>
+        </div>
+      </div>
+
+      <div class="topbar-center">
+        <div class="status-pill" id="statusPill">
+          <span class="dot"></span>
+          <span id="statusText" data-i18n="initializing">Initializing...</span>
+        </div>
+        <div class="lan-hint" id="lanHint" data-i18n-title="lanHintTitle" title="LAN proxy address for other devices"></div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="lang-switch" id="langSwitch" role="group" aria-label="Language">
+          <button class="lang-btn" data-lang="zh" type="button">中文</button>
+          <button class="lang-btn" data-lang="en" type="button">EN</button>
+        </div>
+        <button class="btn btn-primary" id="toggleProxyBtn" type="button" data-i18n="startProxy">Start Proxy</button>
+      </div>
+    </header>
+
+    <!-- Error / Notice Banner -->
+    <div class="banner banner-error hidden" id="errorBanner"></div>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="monitor" type="button" data-i18n="tabMonitor">Monitor</button>
+      <button class="tab-btn" data-tab="whitelist" type="button" data-i18n="tabWhitelist">IP Whitelist</button>
+      <button class="tab-btn" data-tab="settings" type="button" data-i18n="tabSettings">Settings</button>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="content">
+      <!-- Tab 1: Monitor -->
+      <section class="tab-panel active" id="tab-monitor">
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label" data-i18n="kpiUpLabel">Upload Speed</div>
+            <div class="kpi-value text-sky" id="kpiUpBps">0 B/s</div>
+            <div class="kpi-sub"><span data-i18n="kpiTotalUpLabel">Total Up</span>: <span id="kpiTotalUp">0 B</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label" data-i18n="kpiDownLabel">Download Speed</div>
+            <div class="kpi-value text-emerald" id="kpiDownBps">0 B/s</div>
+            <div class="kpi-sub"><span data-i18n="kpiTotalDownLabel">Total Down</span>: <span id="kpiTotalDown">0 B</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label" data-i18n="kpiConnsLabel">Active / Total Requests</div>
+            <div class="kpi-value"><span id="kpiActiveConns">0</span> <span class="kpi-slash">/</span> <span id="kpiTotalReqs">0</span></div>
+            <div class="kpi-sub" data-i18n="kpiConnsSub">Concurrent tunnels &amp; requests</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label" data-i18n="kpiWlLabel">IP Whitelist</div>
+            <div class="kpi-value" id="kpiWhitelistState">-</div>
+            <div class="kpi-sub"><span data-i18n="kpiBlockedLabel">Blocked</span>: <span id="kpiBlockedReqs">0</span></div>
+          </div>
+        </div>
+
+        <!-- Traffic Chart -->
+        <div class="card chart-card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title" data-i18n="chartTitle">Real-time Traffic (Last 3 Minutes)</h2>
+            </div>
+            <div class="chart-legend">
+              <span class="legend-item"><span class="legend-dot sky"></span><span data-i18n="legendUp">Upload</span></span>
+              <span class="legend-item"><span class="legend-dot emerald"></span><span data-i18n="legendDown">Download</span></span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="trafficChart"></canvas>
+            <div class="chart-tooltip hidden" id="chartTooltip"></div>
+          </div>
+        </div>
+
+        <!-- Access Logs -->
+        <div class="card logs-card">
+          <div class="card-header logs-header">
+            <h2 class="card-title" data-i18n="logsTitle">Access Logs</h2>
+            <div class="logs-toolbar">
+              <input class="input input-sm" id="logSearch" type="text" data-i18n-placeholder="logSearchPlaceholder" placeholder="Filter by IP or target..." />
+              <select class="select select-sm" id="logStatusFilter">
+                <option value="all" data-i18n="filterAll">All Statuses</option>
+                <option value="allowed" data-i18n="filterAllowed">Allowed / Active</option>
+                <option value="blocked" data-i18n="filterBlocked">Blocked</option>
+                <option value="auth_failed" data-i18n="filterAuthFailed">Auth Failed</option>
+                <option value="error" data-i18n="filterError">Error</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" id="pauseLogsBtn" type="button" data-i18n="pauseRefresh">Pause</button>
+              <button class="btn btn-ghost btn-sm" id="exportLogsBtn" type="button" data-i18n="exportCsv">Export CSV</button>
+              <button class="btn btn-danger-ghost btn-sm" id="clearLogsBtn" type="button" data-i18n="clearLogs">Clear</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width: 84px;" data-i18n="colTime">Time</th>
+                  <th style="width: 148px;" data-i18n="colClientIp">Client IP</th>
+                  <th style="width: 82px;" data-i18n="colMethod">Method</th>
+                  <th data-i18n="colTarget">Target / URL</th>
+                  <th style="width: 106px;" data-i18n="colStatus">Status</th>
+                  <th style="width: 145px;" data-i18n="colTraffic">Up / Down</th>
+                  <th style="width: 82px;" data-i18n="colDuration">Duration</th>
+                </tr>
+              </thead>
+              <tbody id="logsTableBody">
+                <tr>
+                  <td colspan="7" class="empty-cell" data-i18n="logsEmpty">No access logs yet</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 2: Whitelist -->
+      <section class="tab-panel" id="tab-whitelist">
+        <div class="card">
+          <div class="whitelist-master">
+            <div>
+              <h2 class="card-title" data-i18n="wlMasterTitle">IP Whitelist Control</h2>
+              <p class="card-desc" data-i18n="wlMasterDesc">When enabled, only clients matching enabled IP or CIDR rules below can use this proxy. Others receive 403 Forbidden and are logged. Changes take effect immediately.</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="whitelistMasterToggle" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title" style="margin-bottom: 12px;" data-i18n="wlAddTitle">Add Allowed IP / CIDR</h2>
+          <form class="whitelist-form" id="whitelistAddForm">
+            <input class="input" id="wlCidrInput" type="text" data-i18n-placeholder="wlCidrPlaceholder" placeholder="IP or CIDR, e.g. 192.168.1.100 or 192.168.1.0/24" required />
+            <input class="input" id="wlNoteInput" type="text" data-i18n-placeholder="wlNotePlaceholder" placeholder="Note (optional), e.g. Office PC" />
+            <button class="btn btn-primary" type="submit" data-i18n="wlAddBtn">Add Rule</button>
+          </form>
+          <div class="quick-chips" id="wlQuickChips"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" style="margin-bottom: 10px;">
+            <h2 class="card-title"><span data-i18n="wlListTitle">Whitelist Rules</span> (<span id="wlCount">0</span>)</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width: 220px;" data-i18n="wlColCidr">IP / CIDR</th>
+                  <th data-i18n="wlColNote">Note</th>
+                  <th style="width: 100px;" data-i18n="wlColEnabled">Enabled</th>
+                  <th style="width: 100px;" data-i18n="wlColAction">Action</th>
+                </tr>
+              </thead>
+              <tbody id="whitelistTableBody">
+                <tr>
+                  <td colspan="4" class="empty-cell" data-i18n="wlEmpty">No whitelist rules</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 3: Settings -->
+      <section class="tab-panel" id="tab-settings">
+        <form class="settings-form" id="settingsForm">
+          <div class="card">
+            <h2 class="card-title" style="margin-bottom: 14px;" data-i18n="setBasicTitle">Basic Proxy Settings</h2>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="cfgBind" data-i18n="setBindLabel">Bind Address</label>
+                <div class="input-with-select">
+                  <input class="input" id="cfgBind" type="text" placeholder="0.0.0.0" required />
+                  <select class="select" id="bindPresetSelect" data-i18n-title="bindPresetTitle" title="Quick fill network interface address"></select>
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="cfgPort" data-i18n="setPortLabel">Listen Port</label>
+                <input class="input" id="cfgPort" type="number" min="1" max="65535" required />
+              </div>
+              <div class="form-field">
+                <label for="cfgTimeout" data-i18n="setTimeoutLabel">Connect Timeout (seconds)</label>
+                <input class="input" id="cfgTimeout" type="number" min="1" max="300" required />
+              </div>
+              <div class="form-field">
+                <label for="cfgMaxLogs" data-i18n="setMaxLogsLabel">Max In-Memory Logs</label>
+                <input class="input" id="cfgMaxLogs" type="number" min="100" max="50000" required />
+              </div>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="cfgAutoStart" />
+              <span data-i18n="setAutoStartLabel">Automatically start proxy when Simple Proxy opens</span>
+            </label>
+          </div>
+
+          <div class="card">
+            <div class="card-header" style="margin-bottom: 12px;">
+              <h2 class="card-title" data-i18n="setAuthTitle">Proxy Authentication (Basic Auth)</h2>
+              <label class="switch">
+                <input type="checkbox" id="cfgAuthEnabled" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="cfgAuthUser" data-i18n="setAuthUserLabel">Username</label>
+                <input class="input" id="cfgAuthUser" type="text" placeholder="username" />
+              </div>
+              <div class="form-field">
+                <label for="cfgAuthPass" data-i18n="setAuthPassLabel">Password</label>
+                <input class="input" id="cfgAuthPass" type="password" placeholder="password" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title" style="margin-bottom: 6px;" data-i18n="setSocksTitle">Upstream SOCKS5 Forwarding (Optional)</h2>
+            <p class="card-desc" style="margin-bottom: 14px;" data-i18n="setSocksDesc">Leave empty to connect directly. When configured, HTTPS (CONNECT) tunnels forward through this SOCKS5 proxy.</p>
+            <div class="form-grid form-grid-3">
+              <div class="form-field">
+                <label for="cfgSocksAddr" data-i18n="setSocksAddrLabel">SOCKS5 Address</label>
+                <input class="input" id="cfgSocksAddr" type="text" data-i18n-placeholder="setSocksAddrPlaceholder" placeholder="e.g. 127.0.0.1:1080" />
+              </div>
+              <div class="form-field">
+                <label for="cfgSocksUser" data-i18n="setSocksUserLabel">SOCKS5 Username</label>
+                <input class="input" id="cfgSocksUser" type="text" data-i18n-placeholder="optionalPlaceholder" placeholder="Optional" />
+              </div>
+              <div class="form-field">
+                <label for="cfgSocksPass" data-i18n="setSocksPassLabel">SOCKS5 Password</label>
+                <input class="input" id="cfgSocksPass" type="password" data-i18n-placeholder="optionalPlaceholder" placeholder="Optional" />
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-footer">
+            <button class="btn btn-primary" type="submit" data-i18n="saveSettingsBtn">Save &amp; Apply Settings</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <!-- Exit Confirmation Modal -->
+    <div class="modal-backdrop hidden" id="exitModal" role="dialog" aria-modal="true" aria-labelledby="exitModalTitle">
+      <div class="modal-card">
+        <div class="modal-title" id="exitModalTitle" data-i18n="exitTitle">Confirm Exit</div>
+        <div class="modal-body" id="exitModalMessage"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="exitCancelBtn" type="button" data-i18n="cancel">Cancel</button>
+          <button class="btn btn-danger" id="exitConfirmBtn" type="button" data-i18n="confirmExit">Exit</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast hidden" id="toast"></div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

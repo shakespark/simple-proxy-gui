@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang/glog"
@@ -25,6 +26,8 @@ type ProxyHandler struct {
 	LogAuth       bool
 	LogHeaders    bool
 	Socks5Forward *Socks5Forward
+	Whitelist     *Whitelist
+	Monitor       *Monitor
 }
 
 type Socks5Forward struct {
@@ -34,6 +37,9 @@ type Socks5Forward struct {
 }
 
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	target := formatTarget(r)
+	clientIP, allowed := p.Whitelist.Allow(r.RemoteAddr)
+
 	glog.V(1).Infof("Serving '%s' request from '%s' to '%s'\n", r.Method, r.RemoteAddr, r.Host)
 	if p.LogHeaders {
 		for name, values := range r.Header {
@@ -42,6 +48,14 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	if !allowed {
+		glog.V(1).Infof("Blocked by whitelist: %s -> %s\n", clientIP, target)
+		p.Monitor.RecordBlocked(clientIP, r.Method, target, "blocked", http.StatusForbidden, "IP not in whitelist")
+		http.Error(w, "Forbidden: IP not in whitelist", http.StatusForbidden)
+		return
+	}
+
 	if p.Username != nil && p.Password != nil {
 		username, password, ok := proxyBasicAuth(r)
 		if !ok || username != *p.Username || password != *p.Password {
@@ -50,19 +64,22 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				glog.Errorln("Unauthorized")
 			}
+			p.Monitor.RecordBlocked(clientIP, r.Method, target, "auth_failed", http.StatusProxyAuthRequired, "Proxy authentication failed")
 			w.Header().Set("Proxy-Authenticate", "Basic")
 			http.Error(w, "Unauthorized", http.StatusProxyAuthRequired)
 			return
 		}
 	}
+
+	entry := p.Monitor.StartRequest(clientIP, r.Method, target)
 	if r.Method == http.MethodConnect {
-		handleTunneling(w, r, p.Timeout, p.Socks5Forward)
+		handleTunneling(w, r, p.Timeout, p.Socks5Forward, p.Monitor, entry)
 	} else {
-		handleHTTP(w, r)
+		handleHTTP(w, r, p.Monitor, entry)
 	}
 }
 
-func handleTunneling(w http.ResponseWriter, r *http.Request, timeout time.Duration, socks5Forward *Socks5Forward) {
+func handleTunneling(w http.ResponseWriter, r *http.Request, timeout time.Duration, socks5Forward *Socks5Forward, monitor *Monitor, entry *AccessEntry) {
 	var destConn net.Conn
 	var err error
 
@@ -85,6 +102,7 @@ func handleTunneling(w http.ResponseWriter, r *http.Request, timeout time.Durati
 
 		if err != nil {
 			glog.Errorf("Failed to dial socks5 proxy %s, %s\n", socks5Forward.Address, err.Error())
+			entry.Finish("error", http.StatusServiceUnavailable, err.Error())
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -94,46 +112,140 @@ func handleTunneling(w http.ResponseWriter, r *http.Request, timeout time.Durati
 
 	if err != nil {
 		glog.Errorf("Failed to dial host, %s\n", err.Error())
+		entry.Finish("error", http.StatusServiceUnavailable, err.Error())
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		destConn.Close()
+		glog.Errorln("Attempted to hijack connection that does not support it")
+		entry.Finish("error", http.StatusInternalServerError, "Hijacking not supported")
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		glog.Errorln("Attempted to hijack connection that does not support it")
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		destConn.Close()
+		glog.Errorf("Failed to hijack connection, %s\n", err.Error())
+		entry.Finish("error", http.StatusServiceUnavailable, err.Error())
 		return
 	}
 
-	clientConn, _, err := hijacker.Hijack()
-	if err != nil {
-		glog.Errorf("Failed to hijack connection, %s\n", err.Error())
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-	}
+	monitor.IncActiveConns(1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go transfer(destConn, clientConn, entry.AddUp, &wg)
+	go transfer(clientConn, destConn, entry.AddDown, &wg)
 
-	go transfer(destConn, clientConn)
-	go transfer(clientConn, destConn)
+	go func() {
+		wg.Wait()
+		monitor.IncActiveConns(-1)
+		entry.Finish("allowed", http.StatusOK, "")
+	}()
 }
 
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
+func transfer(destination io.WriteCloser, source io.ReadCloser, onBytes func(int64), wg *sync.WaitGroup) {
+	defer wg.Done()
 	defer destination.Close()
 	defer source.Close()
-	io.Copy(destination, source)
+	buf := make([]byte, 32*1024)
+	io.CopyBuffer(destination, &countingReader{Reader: source, onRead: onBytes}, buf)
 }
 
-func handleHTTP(w http.ResponseWriter, req *http.Request) {
+func handleHTTP(w http.ResponseWriter, req *http.Request, monitor *Monitor, entry *AccessEntry) {
+	monitor.IncActiveConns(1)
+	defer monitor.IncActiveConns(-1)
+
+	entry.AddUp(estimateRequestBytes(req))
+	if req.Body != nil {
+		req.Body = &countingReadCloser{
+			ReadCloser: req.Body,
+			onRead:     entry.AddUp,
+		}
+	}
+
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
 		glog.Errorf("Failed to proxy request, %s\n", err.Error())
+		entry.Finish("error", http.StatusServiceUnavailable, err.Error())
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	defer resp.Body.Close()
+
+	entry.AddDown(estimateResponseHeaderBytes(resp))
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	buf := make([]byte, 32*1024)
+	io.CopyBuffer(w, &countingReader{Reader: resp.Body, onRead: entry.AddDown}, buf)
+	entry.Finish("allowed", resp.StatusCode, "")
+}
+
+type countingReader struct {
+	io.Reader
+	onRead func(int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	if n > 0 && c.onRead != nil {
+		c.onRead(int64(n))
+	}
+	return n, err
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	onRead func(int64)
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	if n > 0 && c.onRead != nil {
+		c.onRead(int64(n))
+	}
+	return n, err
+}
+
+func formatTarget(r *http.Request) string {
+	if r.Method == http.MethodConnect {
+		return r.Host
+	}
+	if r.URL != nil && r.URL.String() != "" {
+		if r.URL.IsAbs() {
+			return r.URL.String()
+		}
+		if r.Host != "" {
+			return "http://" + r.Host + r.URL.RequestURI()
+		}
+		return r.URL.String()
+	}
+	return r.Host
+}
+
+func estimateRequestBytes(r *http.Request) int64 {
+	total := int64(len(r.Method) + len(r.RequestURI) + len(r.Proto) + 4)
+	for k, vv := range r.Header {
+		for _, v := range vv {
+			total += int64(len(k) + len(v) + 4)
+		}
+	}
+	return total
+}
+
+func estimateResponseHeaderBytes(resp *http.Response) int64 {
+	total := int64(len(resp.Proto) + len(resp.Status) + 4)
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			total += int64(len(k) + len(v) + 4)
+		}
+	}
+	return total
 }
 
 func copyHeader(dst, src http.Header) {
